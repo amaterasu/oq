@@ -4,6 +4,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	v3 "github.com/pb33f/libopenapi/datamodel/high/v3"
 )
@@ -65,27 +66,33 @@ type component struct {
 }
 
 type Model struct {
-	doc          *v3.Document
-	endpoints    []endpoint
-	components   []component
-	webhooks     []webhook
-	cursor       int
-	mode         viewMode
-	width        int
-	height       int
-	showHelp     bool
-	lastKey      string
-	lastKeyAt    time.Time
-	scrollOffset int
+	doc                *v3.Document
+	endpoints          []endpoint
+	components         []component
+	webhooks           []webhook
+	cursor             int
+	mode               viewMode
+	width              int
+	height             int
+	showHelp           bool
+	lastKey            string
+	lastKeyAt          time.Time
+	scrollOffset       int
+	searchMode         bool
+	searchInput        textinput.Model
+	filteredEndpoints  []endpoint
+	filteredComponents []component
+	filteredWebhooks   []webhook
 }
 
 func (m *Model) getItemHeight(index int) int {
 	switch m.mode {
 	case viewEndpoints:
-		if index >= len(m.endpoints) {
+		eps := m.getActiveEndpoints()
+		if index >= len(eps) {
 			return 1
 		}
-		ep := m.endpoints[index]
+		ep := eps[index]
 		if ep.folded {
 			return 1 // Just the main line when folded
 		}
@@ -93,20 +100,22 @@ func (m *Model) getItemHeight(index int) int {
 		details := formatEndpointDetails(ep)
 		return 1 + strings.Count(details, "\n") + 1 // +1 for main line, +1 for the detail section
 	case viewComponents:
-		if index >= len(m.components) {
+		comps := m.getActiveComponents()
+		if index >= len(comps) {
 			return 1
 		}
-		comp := m.components[index]
+		comp := comps[index]
 		if comp.folded {
 			return 1 // Just the main line when folded
 		}
 		// When unfolded, count main line + detail lines
 		return 1 + strings.Count(comp.details, "\n") + 1 // +1 for main line, +1 for the detail section
 	case viewWebhooks:
-		if index >= len(m.webhooks) {
+		hooks := m.getActiveWebhooks()
+		if index >= len(hooks) {
 			return 1
 		}
-		hook := m.webhooks[index]
+		hook := hooks[index]
 		if hook.folded {
 			return 1 // Just the main line when folded
 		}
@@ -117,14 +126,35 @@ func (m *Model) getItemHeight(index int) int {
 	return 1
 }
 
+func (m *Model) getActiveEndpoints() []endpoint {
+	if m.searchInput.Value() != "" {
+		return m.filteredEndpoints
+	}
+	return m.endpoints
+}
+
+func (m *Model) getActiveComponents() []component {
+	if m.searchInput.Value() != "" {
+		return m.filteredComponents
+	}
+	return m.components
+}
+
+func (m *Model) getActiveWebhooks() []webhook {
+	if m.searchInput.Value() != "" {
+		return m.filteredWebhooks
+	}
+	return m.webhooks
+}
+
 func (m *Model) getMaxItems() int {
 	switch m.mode {
 	case viewEndpoints:
-		return len(m.endpoints) - 1
+		return len(m.getActiveEndpoints()) - 1
 	case viewComponents:
-		return len(m.components) - 1
+		return len(m.getActiveComponents()) - 1
 	case viewWebhooks:
-		return len(m.webhooks) - 1
+		return len(m.getActiveWebhooks()) - 1
 	default:
 		return -1
 	}
@@ -144,16 +174,19 @@ func (m *Model) ensureCursorVisible() {
 	var items []interface{}
 	switch m.mode {
 	case viewEndpoints:
-		for i := range m.endpoints {
-			items = append(items, m.endpoints[i])
+		eps := m.getActiveEndpoints()
+		for i := range eps {
+			items = append(items, eps[i])
 		}
 	case viewComponents:
-		for i := range m.components {
-			items = append(items, m.components[i])
+		comps := m.getActiveComponents()
+		for i := range comps {
+			items = append(items, comps[i])
 		}
 	case viewWebhooks:
-		for i := range m.webhooks {
-			items = append(items, m.webhooks[i])
+		hooks := m.getActiveWebhooks()
+		for i := range hooks {
+			items = append(items, hooks[i])
 		}
 	}
 
@@ -214,6 +247,11 @@ func NewModel(doc *v3.Document) Model {
 	components := extractComponents(doc)
 	webhooks := extractWebhooks(doc)
 
+	ti := textinput.New()
+	ti.Placeholder = "Search..."
+	ti.CharLimit = 100
+	ti.Width = 50
+
 	return Model{
 		doc:          doc,
 		endpoints:    endpoints,
@@ -225,11 +263,55 @@ func NewModel(doc *v3.Document) Model {
 		height:       24,
 		showHelp:     false,
 		scrollOffset: 0,
+		searchMode:   false,
+		searchInput:  ti,
 	}
 }
 
 func (m *Model) hasWebhooks() bool {
 	return len(m.webhooks) > 0
+}
+
+func (m *Model) filterItems() {
+	query := strings.ToLower(m.searchInput.Value())
+	if query == "" {
+		m.filteredEndpoints = nil
+		m.filteredComponents = nil
+		m.filteredWebhooks = nil
+		return
+	}
+
+	// Filter endpoints
+	m.filteredEndpoints = nil
+	for _, ep := range m.endpoints {
+		if strings.Contains(strings.ToLower(ep.path), query) ||
+			strings.Contains(strings.ToLower(ep.method), query) ||
+			(ep.op.Summary != "" && strings.Contains(strings.ToLower(ep.op.Summary), query)) ||
+			(ep.op.Description != "" && strings.Contains(strings.ToLower(ep.op.Description), query)) {
+			m.filteredEndpoints = append(m.filteredEndpoints, ep)
+		}
+	}
+
+	// Filter components
+	m.filteredComponents = nil
+	for _, comp := range m.components {
+		if strings.Contains(strings.ToLower(comp.name), query) ||
+			strings.Contains(strings.ToLower(comp.compType), query) ||
+			strings.Contains(strings.ToLower(comp.description), query) {
+			m.filteredComponents = append(m.filteredComponents, comp)
+		}
+	}
+
+	// Filter webhooks
+	m.filteredWebhooks = nil
+	for _, hook := range m.webhooks {
+		if strings.Contains(strings.ToLower(hook.name), query) ||
+			strings.Contains(strings.ToLower(hook.method), query) ||
+			(hook.op.Summary != "" && strings.Contains(strings.ToLower(hook.op.Summary), query)) ||
+			(hook.op.Description != "" && strings.Contains(strings.ToLower(hook.op.Description), query)) {
+			m.filteredWebhooks = append(m.filteredWebhooks, hook)
+		}
+	}
 }
 
 func (m Model) Init() tea.Cmd {
@@ -243,6 +325,35 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 
 	case tea.KeyMsg:
+		// Handle search mode input
+		if m.searchMode {
+			switch msg.String() {
+			case "esc":
+				// Esc clears search and exits search mode
+				m.searchMode = false
+				m.searchInput.SetValue("")
+				m.filterItems()
+				m.cursor = 0
+				m.scrollOffset = 0
+				return m, nil
+			case "ctrl+c":
+				// Ctrl+C quits the application
+				return m, tea.Quit
+			case "enter":
+				// Enter keeps the filter and exits search mode
+				m.searchMode = false
+				m.searchInput.Blur()
+				return m, nil
+			default:
+				var cmd tea.Cmd
+				m.searchInput, cmd = m.searchInput.Update(msg)
+				m.filterItems()
+				m.cursor = 0
+				m.scrollOffset = 0
+				return m, cmd
+			}
+		}
+
 		switch msg.String() {
 		case "q", "ctrl+c":
 			if m.showHelp {
@@ -254,9 +365,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "?":
 			m.showHelp = !m.showHelp
 
+		case "/":
+			if !m.showHelp {
+				m.searchMode = true
+				m.searchInput.Focus()
+				m.searchInput.SetValue("")
+				m.filterItems()
+				return m, nil
+			}
+
 		case "esc":
 			if m.showHelp {
 				m.showHelp = false
+			} else if m.searchMode {
+				m.searchMode = false
+				m.searchInput.SetValue("")
+				m.filterItems()
+				m.cursor = 0
+				m.scrollOffset = 0
 			}
 
 		case "tab", "L":
@@ -364,13 +490,41 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 		case "enter", " ":
-			if !m.showHelp {
-				if m.mode == viewEndpoints && m.cursor < len(m.endpoints) {
-					m.endpoints[m.cursor].folded = !m.endpoints[m.cursor].folded
-				} else if m.mode == viewComponents && m.cursor < len(m.components) {
-					m.components[m.cursor].folded = !m.components[m.cursor].folded
-				} else if m.mode == viewWebhooks && m.cursor < len(m.webhooks) {
-					m.webhooks[m.cursor].folded = !m.webhooks[m.cursor].folded
+			if !m.showHelp && !m.searchMode {
+				if m.mode == viewEndpoints {
+					eps := m.getActiveEndpoints()
+					if m.cursor < len(eps) {
+						// Toggle the folded state in the source list
+						for i := range m.endpoints {
+							if m.endpoints[i].path == eps[m.cursor].path && m.endpoints[i].method == eps[m.cursor].method {
+								m.endpoints[i].folded = !m.endpoints[i].folded
+								m.filterItems() // Refresh filtered list
+								break
+							}
+						}
+					}
+				} else if m.mode == viewComponents {
+					comps := m.getActiveComponents()
+					if m.cursor < len(comps) {
+						for i := range m.components {
+							if m.components[i].name == comps[m.cursor].name {
+								m.components[i].folded = !m.components[i].folded
+								m.filterItems()
+								break
+							}
+						}
+					}
+				} else if m.mode == viewWebhooks {
+					hooks := m.getActiveWebhooks()
+					if m.cursor < len(hooks) {
+						for i := range m.webhooks {
+							if m.webhooks[i].name == hooks[m.cursor].name && m.webhooks[i].method == hooks[m.cursor].method {
+								m.webhooks[i].folded = !m.webhooks[i].folded
+								m.filterItems()
+								break
+							}
+						}
+					}
 				}
 			}
 		}

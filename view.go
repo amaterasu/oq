@@ -39,8 +39,10 @@ func (m Model) renderEndpoints() string {
 	contentHeight := calculateContentHeight(m.height)
 	contentWidth := calculateContentWidth(m.width)
 
+	eps := m.getActiveEndpoints()
+
 	startIdx := m.scrollOffset
-	endIdx := min(m.scrollOffset+contentHeight, len(m.endpoints))
+	endIdx := min(m.scrollOffset+contentHeight, len(eps))
 
 	// Add scroll indicator for items above
 	if m.scrollOffset > 0 {
@@ -52,7 +54,7 @@ func (m Model) renderEndpoints() string {
 	}
 
 	for i := startIdx; i < endIdx; i++ {
-		ep := m.endpoints[i]
+		ep := eps[i]
 		style := lipgloss.NewStyle()
 
 		methodColor := methodColors[ep.method]
@@ -95,7 +97,7 @@ func (m Model) renderEndpoints() string {
 	}
 
 	// Add scroll indicator for items below
-	if endIdx < len(m.endpoints) {
+	if endIdx < len(eps) {
 		indicator := lipgloss.NewStyle().
 			Foreground(lipgloss.Color(colorGray)).
 			Render("⬇ More items below...")
@@ -122,8 +124,10 @@ func (m Model) renderComponents() string {
 	contentHeight := calculateContentHeight(m.height)
 	contentWidth := calculateContentWidth(m.width)
 
+	comps := m.getActiveComponents()
+
 	startIdx := m.scrollOffset
-	endIdx := min(m.scrollOffset+contentHeight, len(m.components))
+	endIdx := min(m.scrollOffset+contentHeight, len(comps))
 
 	// Add scroll indicator for items above
 	if m.scrollOffset > 0 {
@@ -135,7 +139,7 @@ func (m Model) renderComponents() string {
 	}
 
 	for i := startIdx; i < endIdx; i++ {
-		comp := m.components[i]
+		comp := comps[i]
 		style := lipgloss.NewStyle()
 
 		componentColor := componentColors[comp.compType]
@@ -181,7 +185,7 @@ func (m Model) renderComponents() string {
 	}
 
 	// Add scroll indicator for items below
-	if endIdx < len(m.components) {
+	if endIdx < len(comps) {
 		indicator := lipgloss.NewStyle().
 			Foreground(lipgloss.Color(colorGray)).
 			Render("⬇ More items below...")
@@ -199,8 +203,10 @@ func (m Model) renderWebhooks() string {
 	contentHeight := calculateContentHeight(m.height)
 	contentWidth := calculateContentWidth(m.width)
 
+	hooks := m.getActiveWebhooks()
+
 	startIdx := m.scrollOffset
-	endIdx := min(m.scrollOffset+contentHeight, len(m.webhooks))
+	endIdx := min(m.scrollOffset+contentHeight, len(hooks))
 
 	// Add scroll indicator for items above
 	if m.scrollOffset > 0 {
@@ -212,7 +218,7 @@ func (m Model) renderWebhooks() string {
 	}
 
 	for i := startIdx; i < endIdx; i++ {
-		hook := m.webhooks[i]
+		hook := hooks[i]
 		style := lipgloss.NewStyle()
 
 		methodColor := methodColors[hook.method]
@@ -255,7 +261,7 @@ func (m Model) renderWebhooks() string {
 	}
 
 	// Add scroll indicator for items below
-	if endIdx < len(m.webhooks) {
+	if endIdx < len(hooks) {
 		indicator := lipgloss.NewStyle().
 			Foreground(lipgloss.Color(colorGray)).
 			Render("⬇ More items below...")
@@ -267,6 +273,15 @@ func (m Model) renderWebhooks() string {
 }
 
 func (m Model) renderHeader() string {
+	// If in search mode, show search input
+	if m.searchMode {
+		searchStyle := lipgloss.NewStyle().
+			Foreground(lipgloss.Color(colorWhite)).
+			Bold(true)
+		searchPrompt := searchStyle.Render("/") + " " + m.searchInput.View()
+		return searchPrompt + "\n\n"
+	}
+
 	// Button styles for navigation
 	buttonStyle := lipgloss.NewStyle().
 		Padding(0, 1).
@@ -337,7 +352,7 @@ func (m Model) renderHeader() string {
 func (m Model) renderFooter() string {
 	schemaInfo := fmt.Sprintf("%s v%s", m.doc.Info.Title, m.doc.Info.Version)
 
-	helpText := "Press '?' for help"
+	helpText := "Press '?' for help | '/' to search"
 	if m.showHelp {
 		helpText = ""
 	}
@@ -379,6 +394,7 @@ func (m Model) renderHelpModal() string {
 		{"Ctrl-D", "Scroll down by half a screen"},
 		{"Tab/L", "Cycle forward through views"},
 		{"Shift+Tab/H", "Cycle backward through views"},
+		{"/", "Search"},
 		{"Enter/Space", "Toggle details"},
 		{"?", "Toggle help"},
 		{"Esc/q", "Close help"},
