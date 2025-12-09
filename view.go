@@ -395,6 +395,7 @@ func (m Model) renderHelpModal() string {
 		{"Tab/L", "Cycle forward through views"},
 		{"Shift+Tab/H", "Cycle backward through views"},
 		{"/", "Search"},
+		{"r", "Generate curl command"},
 		{"Enter/Space", "Toggle details"},
 		{"?", "Toggle help"},
 		{"Esc/q", "Close help"},
@@ -432,6 +433,35 @@ func (m Model) renderHelpModal() string {
 
 	title := titleStyle.Render("Help")
 	modal := modalStyle.Render(title + "\n\n" + helpContent)
+
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, modal)
+}
+
+func (m Model) renderCurlModal() string {
+	titleStyle := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color(colorThemePurple)).
+		Align(lipgloss.Center)
+
+	curlStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(colorWhite)).
+		Padding(1, 0)
+
+	modalStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color(colorThemePurple)).
+		Padding(1, 2).
+		Width(min(m.width-4, 100))
+
+	instructionStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(colorGray)).
+		Italic(true)
+
+	title := titleStyle.Render("Generated curl Command")
+	instruction := instructionStyle.Render("Press Esc to close")
+	curlContent := curlStyle.Render(m.curlCommand)
+
+	modal := modalStyle.Render(title + "\n\n" + curlContent + "\n\n" + instruction)
 
 	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, modal)
 }

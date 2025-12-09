@@ -1,11 +1,13 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/pb33f/libopenapi/datamodel/high/base"
 	v3 "github.com/pb33f/libopenapi/datamodel/high/v3"
 )
 
@@ -83,6 +85,8 @@ type Model struct {
 	filteredEndpoints  []endpoint
 	filteredComponents []component
 	filteredWebhooks   []webhook
+	showCurl           bool
+	curlCommand        string
 }
 
 func (m *Model) getItemHeight(index int) int {
@@ -242,6 +246,170 @@ func (m *Model) ensureCursorVisible() {
 	}
 }
 
+func generateExampleJSON(schema *base.Schema, doc *v3.Document, depth int) string {
+	// Prevent infinite recursion
+	if depth > 3 {
+		return "null"
+	}
+
+	if schema == nil {
+		return "{}"
+	}
+
+	// Handle schema with example
+	if schema.Example != nil {
+		return fmt.Sprintf("%v", schema.Example)
+	}
+
+	// Handle different schema types
+	if len(schema.Type) > 0 {
+		switch schema.Type[0] {
+		case "object":
+			var props []string
+			if schema.Properties != nil {
+				for pair := schema.Properties.First(); pair != nil; pair = pair.Next() {
+					propName := pair.Key()
+					propSchema := pair.Value()
+					
+					// Generate value for this property
+					var value string
+					if propSchema.Schema() != nil {
+						value = generateExampleJSON(propSchema.Schema(), doc, depth+1)
+					} else {
+						value = "\"example\""
+					}
+					props = append(props, fmt.Sprintf("\"%s\": %s", propName, value))
+				}
+			}
+			if len(props) > 0 {
+				return "{ " + strings.Join(props, ", ") + " }"
+			}
+			return "{}"
+
+		case "array":
+			if schema.Items != nil && schema.Items.IsA() {
+				itemSchema := schema.Items.A.Schema()
+				if itemSchema != nil {
+					return "[ " + generateExampleJSON(itemSchema, doc, depth+1) + " ]"
+				}
+			}
+			return "[]"
+
+		case "string":
+			if len(schema.Enum) > 0 {
+				return fmt.Sprintf("\"%v\"", schema.Enum[0])
+			}
+			if schema.Format == "date" {
+				return "\"2024-01-01\""
+			}
+			if schema.Format == "date-time" {
+				return "\"2024-01-01T00:00:00Z\""
+			}
+			if schema.Format == "email" {
+				return "\"user@example.com\""
+			}
+			return "\"string\""
+
+		case "number", "integer":
+			return "0"
+
+		case "boolean":
+			return "false"
+
+		case "null":
+			return "null"
+		}
+	}
+
+	// Handle $ref
+	if len(schema.AllOf) > 0 {
+		// For allOf, try to merge properties from all schemas
+		var allProps []string
+		for _, schemaProxy := range schema.AllOf {
+			if schemaProxy.Schema() != nil {
+				example := generateExampleJSON(schemaProxy.Schema(), doc, depth+1)
+				// Extract properties from the example (simple approach)
+				if example != "{}" && example != "null" {
+					allProps = append(allProps, example)
+				}
+			}
+		}
+		if len(allProps) > 0 {
+			return allProps[0] // Simplified - just use first one
+		}
+	}
+
+	return "{}"
+}
+
+func generateCurl(ep endpoint, doc *v3.Document) string {
+	var curl strings.Builder
+
+	// Start with curl command
+	curl.WriteString("curl -X " + ep.method)
+
+	// Add URL - use first server if available, otherwise placeholder
+	baseURL := "https://api.example.com"
+	if len(doc.Servers) > 0 {
+		baseURL = doc.Servers[0].URL
+	}
+	curl.WriteString(" '" + baseURL + ep.path + "'")
+
+	// Add common headers
+	headers := make(map[string]string)
+
+	// Check if endpoint has request body (POST, PUT, PATCH typically)
+	if ep.op.RequestBody != nil {
+		headers["Content-Type"] = "application/json"
+	}
+
+	// Add security headers if defined
+	if len(ep.op.Security) > 0 {
+		// Check for common auth types
+		for _, secReq := range ep.op.Security {
+			for pair := secReq.Requirements.First(); pair != nil; pair = pair.Next() {
+				secName := pair.Key()
+				if doc.Components != nil && doc.Components.SecuritySchemes != nil {
+					if scheme := doc.Components.SecuritySchemes.GetOrZero(secName); scheme != nil {
+						switch scheme.Type {
+						case "http":
+							if scheme.Scheme == "bearer" {
+								headers["Authorization"] = "Bearer YOUR_TOKEN"
+							} else if scheme.Scheme == "basic" {
+								headers["Authorization"] = "Basic YOUR_CREDENTIALS"
+							}
+						case "apiKey":
+							if scheme.In == "header" {
+								headers[scheme.Name] = "YOUR_API_KEY"
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// Add headers to curl
+	for key, value := range headers {
+		curl.WriteString(" \\\n  -H '" + key + ": " + value + "'")
+	}
+
+	// Add request body example if present
+	if ep.op.RequestBody != nil && ep.op.RequestBody.Content != nil {
+		if jsonContent := ep.op.RequestBody.Content.GetOrZero("application/json"); jsonContent != nil {
+			var bodyJSON string
+			if jsonContent.Schema != nil && jsonContent.Schema.Schema() != nil {
+				bodyJSON = generateExampleJSON(jsonContent.Schema.Schema(), doc, 0)
+			} else {
+				bodyJSON = "{}"
+			}
+			curl.WriteString(" \\\n  -d '" + bodyJSON + "'")
+		}
+	}
+
+	return curl.String()
+}
+
 func NewModel(doc *v3.Document) Model {
 	endpoints := extractEndpoints(doc)
 	components := extractComponents(doc)
@@ -265,6 +433,7 @@ func NewModel(doc *v3.Document) Model {
 		scrollOffset: 0,
 		searchMode:   false,
 		searchInput:  ti,
+		showCurl:     false,
 	}
 }
 
@@ -383,6 +552,31 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.filterItems()
 				m.cursor = 0
 				m.scrollOffset = 0
+			} else if m.showCurl {
+				m.showCurl = false
+			}
+
+		case "r":
+			if !m.showHelp && !m.searchMode {
+				if m.mode == viewEndpoints {
+					eps := m.getActiveEndpoints()
+					if m.cursor < len(eps) {
+						m.curlCommand = generateCurl(eps[m.cursor], m.doc)
+						m.showCurl = true
+					}
+				} else if m.mode == viewWebhooks {
+					hooks := m.getActiveWebhooks()
+					if m.cursor < len(hooks) {
+						// Create a temporary endpoint for webhook
+						tempEp := endpoint{
+							path:   hooks[m.cursor].name,
+							method: hooks[m.cursor].method,
+							op:     hooks[m.cursor].op,
+						}
+						m.curlCommand = generateCurl(tempEp, m.doc)
+						m.showCurl = true
+					}
+				}
 			}
 
 		case "tab", "L":
@@ -593,6 +787,10 @@ func (m Model) View() string {
 
 	if m.showHelp {
 		return m.renderHelpModal()
+	}
+
+	if m.showCurl {
+		return m.renderCurlModal()
 	}
 
 	return baseView
