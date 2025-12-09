@@ -270,7 +270,7 @@ func generateExampleJSON(schema *base.Schema, doc *v3.Document, depth int) strin
 				for pair := schema.Properties.First(); pair != nil; pair = pair.Next() {
 					propName := pair.Key()
 					propSchema := pair.Value()
-					
+
 					// Generate value for this property
 					var value string
 					if propSchema.Schema() != nil {
